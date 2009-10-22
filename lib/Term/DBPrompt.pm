@@ -4,17 +4,18 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
-our @EXPORT = qw(get_cmd_line page_open page_say page_print page_close
-                 set_prompt set_banner set_command);
+our @EXPORT = qw( get_cmd_line   page_open  page_say   page_print page_msg_say
+                  page_msg_print page_close set_prompt set_banner set_command
+                  get_candidates );
 
 use base qw(Exporter);
 
 use Text::Balanced qw(extract_delimited);
 
 use Getopt::Std;
-getopts('f:iaq', \my %opts);
+getopts('f:ipqs', \my %opts);
 
 my $tty_in  = -t STDIN  ? 1 : 0; # is stdin  connected to a keyboard (or tty = typewriter) ?
 my $tty_out = -t STDOUT ? 1 : 0; # is stdout connected to a screen   (or tty = typewriter) ?
@@ -36,16 +37,9 @@ if (!@pipe or $opts{i}) { # if pipe is empty, or interactive has been forced...
     push @pipe, ['i']; # ...then read from STDIN
 }
 
-# perform some plausibility checks:
-
-if ($opts{a} and $opts{q}) {
-    die "Can not have option '-a' and '-q' at the same time";
-}
-
 # set up some parameters:
 
-my $main_prompt = '?> '; # main prompt
-my $sec_prompt  = '!> '; # secondary prompt
+my $prompt = '?> ';
 
 my $banner =
   qq{\n}.
@@ -59,12 +53,11 @@ my @cmd_available = qw( exit help );
 # some setters and getters:
 
 sub set_banner {
-    $banner = $_[0];
+    $banner = shift;
 }
 
 sub set_prompt {
-    $main_prompt = ${$_[0]}{main};
-    $sec_prompt  = ${$_[0]}{sec};
+    $prompt = shift;
 }
 
 sub set_command {
@@ -80,6 +73,8 @@ my $fd_more;
 
 # define subroutines:
 
+my $inp_prv = '';
+my $inp_fin;
 my $inp_dat;
 my $inp_ctr;
 my $inp_tok;
@@ -96,13 +91,12 @@ sub get_cmd_line {
     unless (@commands) { return; }
 
     my $cmd = shift @commands;
-    my ($multi, $line) = @$cmd;
+    my ($open, $close, $line) = @$cmd;
 
-    if ($multi == 2) {
-        return 'Multi';
-    }
-    elsif ($multi == 1) {
-        say $sec_prompt, $line if $opts{a};
+    if ($opts{p}) {
+        unless ($inp_typ eq 'i' and $tty_in) {
+            say $prompt, $line;
+        }
     }
 
     my @words;
@@ -126,40 +120,34 @@ sub get_cmd_line {
     # say "DEBUG words = ('@words') has ", scalar @words, " elements!";
 
     unless (@words) {
-        return 'Empty', '';
+        return 'Empty', $open, $close, '';
     }
 
     $words[0] = lc $words[0];
 
-    my $len = length($words[0]);
-
-    if ($len == 0) {
-        die "Internal error: first word is an empty string";
-    }
-
-    my @candidates;
-
-    for my $cand (@cmd_available) {
-        if (substr($cand, 0, $len) eq $words[0]) {
-            push @candidates, $cand;
-        }
-    }
+    my @candidates = get_candidates($words[0]);
 
     if (@candidates > 1) {
-        return 'Dup', $words[0], @candidates;
+        return 'Dup', $open, $close, $words[0], @candidates;
     }
 
     if (@candidates == 1) {
         $words[0] = $candidates[0];
-        return 'Found', @words;
+        return 'Found', $open, $close, @words;
     }
 
-    return 'Not', @words;
+    return 'Not', $open, $close, @words;
 }
 
 sub getdata {
     while (1) {
         unless (defined $inp_tok) {
+            unless ($inp_prv eq '') {
+                $inp_dat = $inp_prv;
+                $inp_prv = '';
+                $inp_fin = 1;
+                last;
+            }
             unless (@pipe) {
                 $inp_eof = 1;
                 return;
@@ -189,21 +177,20 @@ sub getdata {
                     next;
                 }
                 chomp $inp_dat;
+                $inp_dat =~ s{\A \s+}''xms;
+                $inp_dat =~ s{\s+ \z}''xms;
 
-                if ($opts{a}) {
-                    say $main_prompt, $inp_dat;
+                unless ($inp_prv eq '') {
+                    $inp_dat = $inp_prv.' '.$inp_dat;
+                    $inp_prv = '';
                 }
-
+                $inp_fin = 0;
                 last;
             }
             when ('a') {
                 $inp_dat = $inp_tok->[1];
-
-                if ($opts{a}) {
-                    say $main_prompt, $inp_dat;
-                }
-
                 $inp_tok = undef;
+                $inp_fin = 0;
                 last;
             }
             when ('i') {
@@ -211,7 +198,7 @@ sub getdata {
                     die "STDOUT is redirected but STDIN is not";
                 }
                 if ($tty_in) {
-                    print $main_prompt;
+                    print $prompt;
                 }
                 $inp_dat = <STDIN>;
                 unless (defined $inp_dat) {
@@ -220,10 +207,16 @@ sub getdata {
                 }
                 chomp $inp_dat;
 
-                if (!$tty_in and $opts{a}) {
-                    say $main_prompt, $inp_dat;
+                if (!$tty_in and $opts{p}) {
+                    say $prompt, $inp_dat;
                 }
 
+                unless ($inp_prv eq '') {
+                    $inp_dat = $inp_prv.' '.$inp_dat;
+                    $inp_prv = '';
+                }
+
+                $inp_fin = 0;
                 last;
             }
             default {
@@ -233,7 +226,7 @@ sub getdata {
     }
 
     unless ($inp_dat =~ m{\S}xms) {
-        push @commands, [0, '']; # generate an empty line
+        push @commands, [1, 1, '']; # generate an empty line
         return;
     }
 
@@ -257,6 +250,24 @@ sub getdata {
 
     if ($line =~ m{\A ([^\#]*) \#}xms) { $line = $1; } # remove comments
 
+    $line =~ s{\s+ \z}''xms; # remove trailing spaces
+
+    # here we find out if there is a trailing, half open command:
+    unless ($inp_fin) {
+        if ($inp_typ eq 'f' or ($inp_typ eq 'i' and !$tty_in)) {
+            my $rest;
+            if ($line =~ s{; ([^;]*) \z}';'xms) {
+                $rest = $1;
+            }
+            else {
+                $rest = $line; $line = '';
+            }
+            $rest =~ s{\A \s+}''xms;
+            $rest =~ s{\s+ \z}''xms;
+            $inp_prv = $rest;
+        }
+    }
+
     # split up $line by ';' into @dat
     my @dat;
     for (split m{;}xms, $line) {
@@ -265,14 +276,31 @@ sub getdata {
         push @dat, $_ if m{\S}xms;
     }
 
-    if ($inp_typ eq 'i' and $tty_in and @dat >= 2) {
-        push @commands, [2, ''];
+    my $last = $#dat;
+    for my $i (0..$last) {
+        my $open  = $i == 0     ? 1 : 0;
+        my $close = $i == $last ? 1 : 0;
+
+        push @commands, [$open, $close, $dat[$i]];
     }
-    else {
-        for (@dat) {
-            push @commands, [(@dat >= 2 ? 1 : 0), $_];
+}
+
+sub get_candidates {
+    my $word = lc $_[0];
+
+    return $word if grep {$_ eq $word} @cmd_available;
+
+    my $len  = length $word;
+
+    my @cdt;
+
+    for my $c (@cmd_available) {
+        if (substr($c, 0, $len) eq $word) {
+            push @cdt, $c;
         }
     }
+
+    return @cdt;
 }
 
 sub page_open {
@@ -305,6 +333,45 @@ sub page_say {
     }
 }
 
+sub page_msg_print {
+    if ($inp_typ eq 'i' and $tty_in) {
+        print {$fd_more} @_;
+    }
+    else {
+        print @_ unless $opts{s};
+    }
+}
+
+sub page_msg_say {
+    if ($inp_typ eq 'i' and $tty_in) {
+        say {$fd_more} @_;
+    }
+    else {
+        say @_ unless $opts{s};
+    }
+}
+
+# some testing functions that interfere with @pipe and %opts and reset $inp_variables
+
+sub test_set_pipe {
+    @pipe = @{$_[0]};
+}
+
+sub test_set_opts {
+    %opts = @_;
+}
+
+sub test_reset {
+    $inp_prv = '';
+    $inp_fin = undef;
+    $inp_dat = undef;
+    $inp_ctr = undef;
+    $inp_tok = undef;
+    $inp_typ = undef;
+    $inp_fhd = undef;
+    $inp_eof = 0;
+}
+
 1;
 
 __END__
@@ -321,8 +388,7 @@ Term::DBPrompt - Commandline prompt for a database application
 
   use Term::DBPrompt;
 
-  set_prompt { main => 'dbx> ',
-               sec  => '  -> ' };
+  set_prompt 'dbx> ';
 
   set_banner qq{\n}.
     qq{*******************************************\n}.
@@ -336,23 +402,21 @@ Term::DBPrompt - Commandline prompt for a database application
 
   set_command qw(exit help list);
 
-  while (my ($rc, $cmd, @params) = get_cmd_line) {
+  while (my ($rc, $open, $close, $cmd, @params) = get_cmd_line) {
 
       next if $rc eq 'Empty';
 
-      page_open;
+      page_open if $open;
 
       if ($rc eq 'Dup') {
           local $" = "', '";
-          page_say "-- Command '$cmd' can not be uniquely identified";
-          page_say "-- Possibilities are ('@params')";
-          page_say "-- type 'h' for help or 'e' to exit";
-          page_say '';
+          page_msg_say "-- Command '$cmd' can not be uniquely identified";
+          page_msg_say "-- Possibilities are ('@params')";
+          page_msg_say "-- type 'h' for help or 'e' to exit";
       }
       elsif ($rc eq 'Multi') {
-          page_say "-- Multiple commands can not be issued in interactive mode";
-          page_say "-- type 'h' for help or 'e' to exit";
-          page_say '';
+          page_msg_say "-- Multiple commands can not be issued in interactive mode";
+          page_msg_say "-- type 'h' for help or 'e' to exit";
       }
       else {
           given ($cmd) {
@@ -362,24 +426,21 @@ Term::DBPrompt - Commandline prompt for a database application
               default {
                   local $" = "', '";
                   if ($rc eq 'Not') {
-                      page_say "-- Invalid command '$cmd' ('@params')";
-                      page_say "-- type 'h' for help or 'e' to exit";
-                      page_say '';
+                      page_msg_say "-- Invalid command '$cmd' ('@params')";
+                      page_msg_say "-- type 'h' for help or 'e' to exit";
                   }
                   else {
-                      page_say "-- Function not implemented '$cmd' ('@params')";
-                      page_say "-- type 'h' for help or 'e' to exit";
-                      page_say '';
+                      page_msg_say "-- Function not implemented '$cmd' ('@params')";
+                      page_msg_say "-- type 'h' for help or 'e' to exit";
                   }
               }
           }
       }
 
-      page_close;
+      page_close if $close;
   }
 
   sub do_help {
-      page_say '';
       page_say 'DBX - Database Application';
       page_say '';
       page_say 'Commands:';
@@ -387,7 +448,6 @@ Term::DBPrompt - Commandline prompt for a database application
       page_say '  h(elp)   -- shows this screen';
       page_say '  l(ist)   -- list parameters';
       page_say '  e(xit)   -- exit the application';
-      page_say '';
   }
 
   sub do_list {
@@ -456,7 +516,7 @@ the first characters that make that command unique is enough, in this case a sim
   ...
   Parameter #049...: ZZZ
   Parameter #050...: ZZZ
-  -- Suite  --
+  -- Next  --
   ...
   Parameter #099...: ZZZ
   Parameter #100...: ZZZ
@@ -465,8 +525,8 @@ the first characters that make that command unique is enough, in this case a sim
 
   dbx>
 
-You will notice that the output waits for a keypress after a page is complete (i.e. it is piped
-through 'more').
+You will notice that the output waits for a keypress (see the '-- Next  --' line) after a page is
+complete (i.e. it is piped through 'more').
 
 To exit the application, you can either hit the EOF character (that is Ctrl-Z on Windows or Ctrl-D
 on Linux) or you can enter the exit command.
@@ -475,11 +535,8 @@ on Linux) or you can enter the exit command.
 
 There are 3 different ways to feed commands in batch mode: as a parameter on the commandline, as
 a file specified via option '-f' or as a file redirected into STDIN, all of these 3 possibilities
-can be combined. Multiple commands can be issued in any of the 3 batch modes on a single line by
-separating them with a ';' character (this is not the case in interactive mode, where multiple
-commands would interfere with controlling the output pages using the 'more' feature).
-
-You can also use the '#' character to write comments.
+can be combined. Multiple commands can be issued on a single line by separating them with a ';'
+character. You can also use the '#' character to write comments.
 
 =over
 
@@ -513,19 +570,24 @@ We can also feed a file into dbx.pl by redirecting STDIN:
 
 Here is an overview of the commandline interface:
 
-  perl dbx.pl [-q|-a] [-i] [-f file] "cmd1; cmd2; ..."
+  perl dbx.pl [-q] [-p] [-s] [-f file] [-i] "cmd1; cmd2; ..."
 
 =over
 
 =item option -q
 
-Option '-q' stands for quiet mode. This option supresses any output in batch mode (it does not have
+Option '-q' stands for quiet mode. This option supresses normal output in batch mode (it does not have
 any effect in interactive mode).
 
-=item option -a
+=item option -p
 
-Option '-a' stands for show all. This option shows a prompt and the commands in batch mode (it does
-not have any effect in interactive mode where the prompt and commands are shown anyway)
+Option '-p' stands for show prompt. This option shows a prompt and the commands in batch mode. It does
+not have any effect in interactive mode where the prompt is shown anyway.
+
+=item option -s
+
+Option '-s' stands for silent mode. This option supresses messages (error messages and success messages). It does
+not have any effect in interactive mode where messages are shown anyway.
 
 =item option -f
 
@@ -552,13 +614,11 @@ The following functions are exported by default:
 
 =item set_prompt
 
-This functions set the 2 prompts, the main prompt and the secondary prompt (which is used for multiple
-commands). The parameter is a hash reference with two keys: 'main' and 'sec'. Here is an example to set
-the main prompt to 'abc> ' and the secondary prompt to ' --> ':
+This functions sets the prompt. Here is an example to set the prompt to 'abc> ':
 
-  set_prompt {main => 'abc> ', sec => ' --> '};
+  set_prompt 'abc> ';
 
-The default is '?> ' for the main prompt and '!> ' for the secondary prompt.
+The default is '?> '.
 
 =item set_banner
 
@@ -595,11 +655,11 @@ if we wanted the identifier 'init' or 'input'. In order to be valid, we would ha
 =item get_cmd_line
 
 This is the main function to obtain one line from the input (either from STDIN, from a file or from the commandline).
-The function takes no parameter, but returns three elements:
+The function takes no parameter, but returns 5 elements:
 
-  my ($rc, $cmd, @params) = get_cmd_line;
+  my ($rc, $open, $close, $cmd, @params) = get_cmd_line;
 
-The first parameter is a return code. It can have 5 values: 'Found', 'Not', 'Empty', 'Dup' or 'Multi'.
+The first parameter is a return code. It can have 4 values: 'Found', 'Not', 'Empty' or 'Dup'.
 
 =over
 
@@ -622,11 +682,18 @@ indicates that an empty line has been entered.
 indicates that the prefix which has been entered corresponds to more than one identifier. In that case
 $cmd contains the prefix and @param contains all the possible identifiers that match the prefix.
 
-=item $rc == 'Multi'
-
-indicates that multiple commands (separated by ';') have been entered in interactive mode.
-
 =back
+
+The value $open can be either 0 or 1. It indicates whether or not the page_open() function should be
+called before the command is executed.
+
+The value $close can be either 0 or 1. It indicates whether or not the page_close() function should be
+called after the command is executed.
+
+=item get_candidates
+
+This functions returns all possible candidates for a given word where the prefix of the commands registered in the
+set_command function matches that word. The returned list can have 0, 1 or more than 1 element.
 
 =item page_open
 
@@ -634,13 +701,31 @@ This functions open a pipe to 'more' for interactive sessions (in batch mode, th
 
 =item page_say
 
-For interactive sessions, this function prints its parameters (followed by a newline character) to the 'more'
-pipe. In batch mode, this function prints its parameters (followed by a newline character) to STDOUT.
+This function is used for printing normal output with a trailing newline character.
+
+For interactive sessions, this function prints the output (followed by a newline character) to the 'more'
+pipe. In batch mode, this function prints the output (followed by a newline character) to STDOUT.
 
 =item page_print
 
-For interactive sessions, this function prints its parameters (without a newline character) to the 'more'
-pipe. In batch mode, this function prints its parameters (without a newline character) to STDOUT.
+This function is used for printing normal output without a trailing newline character.
+
+For interactive sessions, this function prints the output (without a newline character) to the 'more'
+pipe. In batch mode, this function prints the output (without a newline character) to STDOUT.
+
+=item page_msg_say
+
+This function is used for printing messages with a trailing newline character.
+
+For interactive sessions, this function prints the message (followed by a newline character) to the 'more'
+pipe. In batch mode, this function prints the message (followed by a newline character) to STDOUT.
+
+=item page_msg_print
+
+This function is used for printing messages without a trailing newline character.
+
+For interactive sessions, this function prints the message (without a newline character) to the 'more'
+pipe. In batch mode, this function prints the message (without a newline character) to STDOUT.
 
 =item page_close
 

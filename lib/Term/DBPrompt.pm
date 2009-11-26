@@ -4,37 +4,78 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
-our @EXPORT = qw( get_cmd_line   page_open  page_say   page_print page_msg_say
-                  page_msg_print page_close set_prompt set_banner set_command
-                  get_candidates );
+our @EXPORT = qw( get_cmd_line page_open   page_close     set_prompt
+                  set_banner   set_command get_candidates set_opt
+                  init_pipe    fh);
 
 use base qw(Exporter);
+use File::Spec;
 
 use Text::Balanced qw(extract_delimited);
 
-use Getopt::Std;
-getopts('f:ipqs', \my %opts);
-
-my $tty_in  = -t STDIN  ? 1 : 0; # is stdin  connected to a keyboard (or tty = typewriter) ?
-my $tty_out = -t STDOUT ? 1 : 0; # is stdout connected to a screen   (or tty = typewriter) ?
-
-my $stdio = 0;
-
-# put what we have for input into @pipe:
-
 my @pipe;
 
-if (defined $opts{f}) {
-    push @pipe, ['f', $opts{f}]; # first read from a file (if any)
+my $opt_file;
+my $opt_argv;
+my $opt_interact;
+my $opt_prompt;
+my $opt_quiet;
+
+my $tty_in;
+my $tty_out;
+
+my $inp_prv = '';
+my $inp_fin;
+my $inp_dat;
+my $inp_ctr;
+my $inp_tok;
+my $inp_typ;
+my $inp_fhd;
+my $inp_eof = 0;
+
+my @commands;
+
+sub set_opt {
+    while (my ($k, $v) = each %{$_[0]}) {
+        given ($k) {
+            when ('file')    { $opt_file     = $v; }
+            when ('argv')    { $opt_argv     = $v; }
+            when ('inter')   { $opt_interact = $v; }
+            when ('prompt')  { $opt_prompt   = $v; }
+            when ('quiet')   { $opt_quiet    = $v; }
+            when ('tty_in')  { $tty_in       = $v; }
+            when ('tty_out') { $tty_out      = $v; }
+            default {
+                die "Error: in subroutine set_opt(), found invalid key {$k => '$v'} (not 'file', 'argv', 'inter', 'prompt', 'quiet', 'tty_in' or 'tty_out')";
+            }
+        }
+    }
 }
-if (@ARGV) {
-    push @pipe, ['a', "@ARGV"]; # then execute from the commandline
-}
-if (!@pipe or $opts{i}) { # if pipe is empty, or interactive has been forced...
-    $stdio = 1;
-    push @pipe, ['i']; # ...then read from STDIN
+
+sub init_pipe {
+    @pipe = ();
+    if (defined $opt_file) {
+        push @pipe, ['f', $opt_file]; # first read from a file (if any)
+    }
+    if (defined $opt_argv and $opt_argv =~ m{\S}xms) {
+        push @pipe, ['a', $opt_argv]; # then execute from the commandline
+    }
+    if (!@pipe or $opt_interact) { # if pipe is empty, or interactive has been forced...
+        push @pipe, ['i']; # ...then read from STDIN
+    }
+
+    $inp_prv = '';
+    $inp_fin = undef;
+    $inp_dat = undef;
+    $inp_ctr = undef;
+    $inp_tok = undef;
+    $inp_typ = undef;
+    $inp_fhd = undef;
+    $inp_eof = 0;
+
+    @commands = ();
 }
 
 # set up some parameters:
@@ -67,23 +108,6 @@ sub set_command {
     }
 }
 
-# filehandle to pipe into more
-
-my $fd_more;
-
-# define subroutines:
-
-my $inp_prv = '';
-my $inp_fin;
-my $inp_dat;
-my $inp_ctr;
-my $inp_tok;
-my $inp_typ;
-my $inp_fhd;
-my $inp_eof = 0;
-
-my @commands;
-
 sub get_cmd_line {
     until ($inp_eof or @commands) {
         getdata();
@@ -93,7 +117,7 @@ sub get_cmd_line {
     my $cmd = shift @commands;
     my ($open, $close, $line) = @$cmd;
 
-    if ($opts{p}) {
+    if ($opt_prompt) {
         unless ($inp_typ eq 'i' and $tty_in) {
             say $prompt, $line;
         }
@@ -207,7 +231,7 @@ sub getdata {
                 }
                 chomp $inp_dat;
 
-                if (!$tty_in and $opts{p}) {
+                if (!$tty_in and $opt_prompt) {
                     say $prompt, $inp_dat;
                 }
 
@@ -303,73 +327,41 @@ sub get_candidates {
     return @cdt;
 }
 
+my $temp_dir = $^O eq 'MSWin32' ? $ENV{TMP} || $ENV{TEMP} : $^O eq 'linux' ? '/tmp' : undef;
+
+unless (defined $temp_dir) {
+    die "Error: Can't find tempdir, OS = '$^O'";
+}
+
+my $temp_name = File::Spec->catfile($temp_dir, 'DBPrompt.txt');
+
+my $page_fh;
+
+sub fh { $page_fh; }
+
 sub page_open {
-    if ($inp_typ eq 'i' and $tty_in) {
-        open $fd_more, '|-', 'more' or die "Error can't open '|-' 'more' because $!";
-    }
+    open $page_fh, '>', $temp_name or die "Error: can't open > '$temp_name' because $!";
 }
 
 sub page_close {
+    close $page_fh;
+
     if ($inp_typ eq 'i' and $tty_in) {
-        close $fd_more;
+        if ($^O eq 'MSWin32') {
+            system qq{more < "$temp_name"};
+        }
+        else {
+            system qq{more < '$temp_name'};
+        }
     }
-}
-
-sub page_print {
-    if ($inp_typ eq 'i' and $tty_in) {
-        print {$fd_more} @_;
+    elsif (!$opt_quiet) {
+        if ($^O eq 'MSWin32') {
+            system qq{type "$temp_name"};
+        }
+        else {
+            system qq{cat '$temp_name'};
+        }
     }
-    else {
-        print @_ unless $opts{q};
-    }
-}
-
-sub page_say {
-    if ($inp_typ eq 'i' and $tty_in) {
-        say {$fd_more} @_;
-    }
-    else {
-        say @_ unless $opts{q};
-    }
-}
-
-sub page_msg_print {
-    if ($inp_typ eq 'i' and $tty_in) {
-        print {$fd_more} @_;
-    }
-    else {
-        print @_ unless $opts{s};
-    }
-}
-
-sub page_msg_say {
-    if ($inp_typ eq 'i' and $tty_in) {
-        say {$fd_more} @_;
-    }
-    else {
-        say @_ unless $opts{s};
-    }
-}
-
-# some testing functions that interfere with @pipe and %opts and reset $inp_variables
-
-sub test_set_pipe {
-    @pipe = @{$_[0]};
-}
-
-sub test_set_opts {
-    %opts = @_;
-}
-
-sub test_reset {
-    $inp_prv = '';
-    $inp_fin = undef;
-    $inp_dat = undef;
-    $inp_ctr = undef;
-    $inp_tok = undef;
-    $inp_typ = undef;
-    $inp_fhd = undef;
-    $inp_eof = 0;
 }
 
 1;
@@ -380,6 +372,49 @@ __END__
 
 Term::DBPrompt - Commandline prompt for a database application
 
+=head1 NEW INTERFACE
+
+Version 0.03 of Term::DBPrompt has introduced incompatible changes that break the interface. The
+changes are:
+
+=head2 Subroutines page_say and page_print
+
+Subroutines page_say() and page_print() have been removed from version 0.03. Instead, a new function
+fh() is introduced that returns a filhandle that can be printed to. The replacement is therefore
+to use that filehandle as follows: say {fh()} ... or print {fh()} ...
+
+=head2 Getopt::Std
+
+The use of Getopt::Std, Commandline parameters and STDIN/STDOUT handling has been removed from version
+0.03. Consequently, those actions must be performed in the calling program and passed on to Term::DBPrompt
+with the new methods set_opt() and init_pipe(). (the subroutine init_pipe() must be called after set_opt(),
+but before get_cmd_line()).
+
+Here is a sample piece of code:
+
+  use Term::DBPrompt;
+
+  use Getopt::Std;
+  getopts('f:ipq', \my %opts);
+  set_opt({ file     => $opts{f},
+            argv     => "@ARGV",
+            inter    => $opts{i},
+            prompt   => $opts{p},
+            quiet    => $opts{q},
+            tty_in   => -t STDIN,
+            tty_out  => -t STDOUT,
+          });
+
+  init_pipe;
+
+  while (my ($rc, $open, $close, $cmd, @params) = get_cmd_line)
+
+=head2 Other changes
+
+Subroutines page_msg_say() and page_msg_print() have been removed from version 0.03, the
+replacement is to use a simple say {fh()} ... or print {fh()} ... as described above. Consequently,
+there is no equivalent for option "-s" anymore, this case is now covered by option "-q".
+
 =head1 SYNOPSIS
 
   use strict;
@@ -387,6 +422,17 @@ Term::DBPrompt - Commandline prompt for a database application
   use 5.010;
 
   use Term::DBPrompt;
+
+  use Getopt::Std;
+  getopts('f:ipq', \my %opts);
+  set_opt({ file     => $opts{f},
+            argv     => "@ARGV",
+            inter    => $opts{i},
+            prompt   => $opts{p},
+            quiet    => $opts{q},
+            tty_in   => -t STDIN,
+            tty_out  => -t STDOUT,
+          });
 
   set_prompt 'dbx> ';
 
@@ -402,6 +448,8 @@ Term::DBPrompt - Commandline prompt for a database application
 
   set_command qw(exit help list);
 
+  init_pipe;
+
   while (my ($rc, $open, $close, $cmd, @params) = get_cmd_line) {
 
       next if $rc eq 'Empty';
@@ -410,13 +458,13 @@ Term::DBPrompt - Commandline prompt for a database application
 
       if ($rc eq 'Dup') {
           local $" = "', '";
-          page_msg_say "-- Command '$cmd' can not be uniquely identified";
-          page_msg_say "-- Possibilities are ('@params')";
-          page_msg_say "-- type 'h' for help or 'e' to exit";
+          say {fh()} "-- Command '$cmd' can not be uniquely identified";
+          say {fh()} "-- Possibilities are ('@params')";
+          say {fh()} "-- type 'h' for help or 'e' to exit";
       }
       elsif ($rc eq 'Multi') {
-          page_msg_say "-- Multiple commands can not be issued in interactive mode";
-          page_msg_say "-- type 'h' for help or 'e' to exit";
+          say {fh()} "-- Multiple commands can not be issued in interactive mode";
+          say {fh()} "-- type 'h' for help or 'e' to exit";
       }
       else {
           given ($cmd) {
@@ -426,12 +474,12 @@ Term::DBPrompt - Commandline prompt for a database application
               default {
                   local $" = "', '";
                   if ($rc eq 'Not') {
-                      page_msg_say "-- Invalid command '$cmd' ('@params')";
-                      page_msg_say "-- type 'h' for help or 'e' to exit";
+                      say {fh()} "-- Invalid command '$cmd' ('@params')";
+                      say {fh()} "-- type 'h' for help or 'e' to exit";
                   }
                   else {
-                      page_msg_say "-- Function not implemented '$cmd' ('@params')";
-                      page_msg_say "-- type 'h' for help or 'e' to exit";
+                      say {fh()} "-- Function not implemented '$cmd' ('@params')";
+                      say {fh()} "-- type 'h' for help or 'e' to exit";
                   }
               }
           }
@@ -441,27 +489,27 @@ Term::DBPrompt - Commandline prompt for a database application
   }
 
   sub do_help {
-      page_say 'DBX - Database Application';
-      page_say '';
-      page_say 'Commands:';
-      page_say '';
-      page_say '  h(elp)   -- shows this screen';
-      page_say '  l(ist)   -- list parameters';
-      page_say '  e(xit)   -- exit the application';
+      say {fh()} 'DBX - Database Application';
+      say {fh()} '';
+      say {fh()} 'Commands:';
+      say {fh()} '';
+      say {fh()} '  h(elp)   -- shows this screen';
+      say {fh()} '  l(ist)   -- list parameters';
+      say {fh()} '  e(xit)   -- exit the application';
   }
 
   sub do_list {
-      page_say '*****************';
-      page_say '**  Parameters **';
-      page_say '*****************';
-      page_say '';
+      say {fh()} '*****************';
+      say {fh()} '**  Parameters **';
+      say {fh()} '*****************';
+      say {fh()} '';
 
       for (1..100) {
-          page_say sprintf('Parameter #%03d...: ZZZ', $_);
+          printf {fh()} "Parameter #%03d...: ZZZ\n", $_;
       }
 
-      page_say '';
-      page_say '*****************';
+      say {fh()} '';
+      say {fh()} '*****************';
   }
 
 =head1 DESCRIPTION
@@ -570,7 +618,7 @@ We can also feed a file into dbx.pl by redirecting STDIN:
 
 Here is an overview of the commandline interface:
 
-  perl dbx.pl [-q] [-p] [-s] [-f file] [-i] "cmd1; cmd2; ..."
+  perl dbx.pl [-q] [-p] [-f file] [-i] "cmd1; cmd2; ..."
 
 =over
 
@@ -583,11 +631,6 @@ any effect in interactive mode).
 
 Option '-p' stands for show prompt. This option shows a prompt and the commands in batch mode. It does
 not have any effect in interactive mode where the prompt is shown anyway.
-
-=item option -s
-
-Option '-s' stands for silent mode. This option supresses messages (error messages and success messages). It does
-not have any effect in interactive mode where messages are shown anyway.
 
 =item option -f
 
@@ -611,6 +654,33 @@ processed, you can use the -i option:
 The following functions are exported by default:
 
 =over
+
+=item set_opt
+
+This function sets one (or more) options (which usually have been read in by "Getopt::Std").
+The syntax is: set_opt({ opt1 => "val1", opt2 => "val2", ...), where opt1, opt2 can be any of
+the following: ('file', 'argv', 'inter', prompt' or 'quiet').
+
+set_opt() is usually called like this:
+
+  use Term::DBPrompt;
+
+  use Getopt::Std;
+  getopts('f:ipq', \my %opts);
+
+  set_opt({ file     => $opts{f},
+            argv     => "@ARGV",
+            inter    => $opts{i},
+            prompt   => $opts{p},
+            quiet    => $opts{q},
+            tty_in   => -t STDIN,
+            tty_out  => -t STDOUT,
+          });
+
+=item init_pipe
+
+This function must be called before the first use of get_cmd_line(). It resets its internal counters
+to start a new session of commands to be processed.
 
 =item set_prompt
 
@@ -697,39 +767,12 @@ set_command function matches that word. The returned list can have 0, 1 or more 
 
 =item page_open
 
-This functions open a pipe to 'more' for interactive sessions (in batch mode, this is a no-op)
-
-=item page_say
-
-This function is used for printing normal output with a trailing newline character.
-
-For interactive sessions, this function prints the output (followed by a newline character) to the 'more'
-pipe. In batch mode, this function prints the output (followed by a newline character) to STDOUT.
-
-=item page_print
-
-This function is used for printing normal output without a trailing newline character.
-
-For interactive sessions, this function prints the output (without a newline character) to the 'more'
-pipe. In batch mode, this function prints the output (without a newline character) to STDOUT.
-
-=item page_msg_say
-
-This function is used for printing messages with a trailing newline character.
-
-For interactive sessions, this function prints the message (followed by a newline character) to the 'more'
-pipe. In batch mode, this function prints the message (followed by a newline character) to STDOUT.
-
-=item page_msg_print
-
-This function is used for printing messages without a trailing newline character.
-
-For interactive sessions, this function prints the message (without a newline character) to the 'more'
-pipe. In batch mode, this function prints the message (without a newline character) to STDOUT.
+This functions opens a temp file to which you can print via the fh() handle.
 
 =item page_close
 
-This functions closes the pipe to 'more' for interactive sessions (in batch mode, this is a no-op)
+This functions closes the temp file and displays its content on the screen. (for interactive session, its content
+will be piped through "more")
 
 =back
 

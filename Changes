@@ -12,3 +12,11 @@ Revision history for Perl extension Term::DBPrompt.
       introduce new option '-s' to suppress messages
       function set_prompt() now takes only one parameter
       function get_cmd_line() now returns two additional elements ($open, $close)
+
+0.03  25 Nov 2009
+      break the old Getopt::Std interface, remove Getopt::Std and replace by
+        set_opt().
+      add a new subroutine init_pipe().
+      remove option/functionality "-s" silent
+      remove subroutines page_print(), page_say(), page_msg_print(), page_msg_say()
+        and replace by a subroutine fh() that returns a filehandle

@@ -3,7 +3,7 @@ BEGIN { use_ok('Term::DBPrompt') };
 
 set_command qw(help exit i init input list);
 
-Term::DBPrompt::test_set_pipe([['f', \'
+set_opt({ quiet => 1, file => \'
 abc;
 def; ghi;
 help qslkdj fff;
@@ -27,10 +27,9 @@ list a b # c d;
 list a "b # c" d;
 list a b ";" c d;
 exit; list; i; inp; ini;
-']]);
+'});
 
-Term::DBPrompt::test_set_opts('q' => 1);
-Term::DBPrompt::test_reset;
+init_pipe;
 
 {
     my ($rc, $open, $close, $cmd, @params) = get_cmd_line;

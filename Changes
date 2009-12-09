@@ -20,3 +20,7 @@ Revision history for Perl extension Term::DBPrompt.
       remove option/functionality "-s" silent
       remove subroutines page_print(), page_say(), page_msg_print(), page_msg_say()
         and replace by a subroutine fh() that returns a filehandle
+
+0.04  09 Dec 2009
+      In Makefile.PL ==> guard against $^O other than 'MSWin32' or 'linux'
+      (otherwise the tests will fail)

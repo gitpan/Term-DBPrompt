@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 our @EXPORT = qw( get_cmd_line page_open   page_close     set_prompt
                   set_banner   set_command get_candidates set_opt

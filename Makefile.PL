@@ -3,10 +3,6 @@ use ExtUtils::MakeMaker;
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 
-unless ($^O eq 'MSWin32' or $^O eq 'linux') {
-    die "Term::DBPrompt does not work with '$^O', only 'MSWin32' or 'linux' does";
-}
-
 WriteMakefile(
     NAME              => 'Term::DBPrompt',
     VERSION_FROM      => 'lib/Term/DBPrompt.pm', # finds $VERSION

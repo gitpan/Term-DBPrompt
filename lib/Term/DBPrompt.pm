@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 our @EXPORT = qw( get_cmd_line page_open   page_close     set_prompt
                   set_banner   set_command get_candidates set_opt
@@ -14,6 +14,8 @@ use base qw(Exporter);
 use File::Spec;
 
 use Text::Balanced qw(extract_delimited);
+
+use Fcntl qw(:seek);
 
 my @pipe;
 
@@ -327,40 +329,33 @@ sub get_candidates {
     return @cdt;
 }
 
-my $temp_dir = $^O eq 'MSWin32' ? $ENV{TMP} || $ENV{TEMP} : $^O eq 'linux' ? '/tmp' : undef;
-
-unless (defined $temp_dir) {
-    die "Error: Can't find tempdir, OS = '$^O'";
-}
-
-my $temp_name = File::Spec->catfile($temp_dir, 'DBPrompt.txt');
-
-my $page_fh;
+open my $page_fh, '+>', undef or die "Error: Can't open '+>' undef because $!";
 
 sub fh { $page_fh; }
 
 sub page_open {
-    open $page_fh, '>', $temp_name or die "Error: can't open > '$temp_name' because $!";
+    seek $page_fh, 0, SEEK_SET or die "Error: Can't seek tempfile to 0 for writing because $!";
+    truncate $page_fh, 0 or die "Error: Can't truncate tempfile to 0 because $!";
 }
 
 sub page_close {
-    close $page_fh;
+    seek $page_fh, 0, SEEK_SET or die "Error: Can't seek tempfile to 0 for reading because $!";
+
+    my $out_fh;
 
     if ($inp_typ eq 'i' and $tty_in) {
-        if ($^O eq 'MSWin32') {
-            system qq{more < "$temp_name"};
-        }
-        else {
-            system qq{more < '$temp_name'};
-        }
+        open $out_fh, '|-', 'more' or die "Error: Can't open '|-' 'more' because $!";
     }
     elsif (!$opt_quiet) {
-        if ($^O eq 'MSWin32') {
-            system qq{type "$temp_name"};
+        open $out_fh, '>&STDOUT' or die "Error: duplicate STDOUT because $!";
+    }
+
+    if (defined $out_fh) {
+        while (my $_ = <$page_fh>) {
+            print {$out_fh} $_;
         }
-        else {
-            system qq{cat '$temp_name'};
-        }
+
+        close $out_fh;
     }
 }
 

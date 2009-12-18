@@ -24,3 +24,7 @@ Revision history for Perl extension Term::DBPrompt.
 0.04  09 Dec 2009
       In Makefile.PL ==> guard against $^O other than 'MSWin32' or 'linux'
       (otherwise the tests will fail)
+
+0.05  18 Dec 2009
+      Replace temp filenames by a simple open '>+', undef
+      Remove the guard in Makefile.PL, Term::DBPrompt now runs with every Operating System
